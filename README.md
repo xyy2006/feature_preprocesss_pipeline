@@ -1,2 +1,2 @@
 # feature_preprocesss_pipeline
-automated using some caret package functions and in-house functions
+automated feature diagnosis and preprocess pipeline using some caret package functions and in-house written functions.
