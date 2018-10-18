@@ -172,43 +172,104 @@ if (length(integer_or_numeric_nonEndpoint_index) > 1) {
 #'
 #' @param categorical_variable_name a string. the variable name in your dt
 #' @param dt a data.table object
-#' @param first_n an integer. specifiy how many biggest levels we should pre-exclude in later calculation. If first_n = 3,remove first 3 biggest large group from denominator, and also remove the sum of their combined sample size from numerator. Then calculate averge group size should be. 
-#' @param missing_value the extra missing value deemed as missing value in the variable/column. default "". Note NA or NaN are are default missing values (will be counted as different levels by function `table`).
+#' @param first_n an integer. specifiy how many biggest levels we should pre-exclude in later calculation. If first_n = 3,remove first 3 biggest large group from denominator, and also remove the sum of their combined sample size from numerator. Then calculate averge group size should be.
+#' @param extra_missing_value the extra missing value deemed as missing value in the variable/column in addition to NA and NaN. default "". Note NA or NaN are are default missing values (will be counted as different levels by function `table`).
 #' @param minimal_sample_size_per_level if use this, `first_n` based method will be ignored. Levels with less than `minimal_sample_size_per_level` sample size will be merged to `merged_value`
-#' @param merged_value the character value you want the merged levels to be.
+#' @param merged_value the character value you want the merged levels (with insufficient samples) to be.
+#' @param merged_missing_value the character value you want the merged missing levels (NA, NaN and extra_missing_value) to be.
 #'
 #' @return a variable contains the merged levels and those intact levels from original `categorical_variable_name`.
 #' @export
 #'
 #' @examples
-#' new_variable_value <- merge_trivialLevels_in_categoricalVariable(variable_name, dt = data_dt, first_n = 2, missing_value = "", merged_value = "others")
+#' new_variable_value <- merge_trivialLevels_in_categoricalVariable(variable_name, dt = data_dt, first_n = 2, extra_missing_value = "", merged_value = "others")
 #' data_dt[ , (variable_name) := new_variable_value]
 
-merge_trivialLevels_in_categoricalVariable <- function(categorical_variable_name, dt, first_n = 1, missing_value = "", flag_use_minimal_sample_size_per_level = FALSE, minimal_sample_size_per_level = 20, merged_value = "others"){
- 
-  if (data_dt[ , categorical_variable_name, with = FALSE] %>% unlist %>% class == "factor") {
-    data_dt[ , (categorical_variable_name) := eval(as.name(categorical_variable_name)) %>% as.character()]
+merge_trivialLevels_in_categoricalVariable <- function(categorical_variable_name, dt, first_n = 1, extra_missing_value = "", flag_use_minimal_sample_size_per_level = FALSE, minimal_sample_size_per_level = 20, merged_value = "others", merged_missing_value = "missing_value"){
+
+  original_variable_value <- dt[[ categorical_variable_name]]
+
+  #: if `n_distinct` (a.k.a., levels)
+  if (original_variable_value %>% n_distinct <= 2) {
+
+    stop("the variable only has ", original_variable_value %>% n_distinct, " levels. Algorithm of merging will not work!")
+  }  
+
+  #: factor to character, so later assign merged_value and merged_missing_value will work, otherwise, need to add levels to levels(factorVar), then assign, awkward.
+  if (original_variable_value %>% class == "factor") {
+    original_variable_value <-  original_variable_value %>% as.character()
   }
-  sample_size_by_group <-  dt[, categorical_variable_name, with = FALSE] %>% table(., useNA = "always")
-  
+  sample_size_by_group <-  original_variable_value %>% table(., useNA = "always")
+
   if (!flag_use_minimal_sample_size_per_level) {
-    samplesize_average_by_groups <- (nrow(dt) - head(sort(sample_size_by_group, decreasing = TRUE), first_n) %>% sum) / (dt[, categorical_variable_name, with = FALSE] %>% n_distinct  - first_n)
+    samplesize_average_by_groups <- (length(original_variable_value) - head(sort(sample_size_by_group, decreasing = TRUE), first_n) %>% sum) / (original_variable_value %>% n_distinct  - first_n)
     names_groups_with_smaller_samplesize <- names(sample_size_by_group)[sample_size_by_group < samplesize_average_by_groups]
   } else {
     names_groups_with_smaller_samplesize <- names(sample_size_by_group)[sample_size_by_group < minimal_sample_size_per_level]
   }
-  original_variable_value <- dt[ , categorical_variable_name, with = FALSE] %>% unlist(., use.names = FALSE)
-  original_variable_value[original_variable_value %in% c(names_groups_with_smaller_samplesize, missing_value)] <- merged_value
+  original_variable_value[original_variable_value %in% c(names_groups_with_smaller_samplesize)] <- merged_value
+  original_variable_value[original_variable_value %in% c( extra_missing_value, NA, NaN)] <- merged_missing_value
+
+  #: return factor type variable for later modeling convenience.
   return(original_variable_value %>% as.factor)
 }
 
+#: ----example 1----
 ##: could loop over and automatic for levels merge for all factor/character variables.
 character_or_factor_index <- data_dt %>% sapply(., function(x) is(x, "factor")|is(x, "character")) %>% which
 #
 temp <- foreach (variable_name = c("vehicle_name", "vehicle_make")) %do% {
-  new_variable_value <- merge_trivialLevels_in_categoricalVariable(variable_name, dt = data_dt, first_n = 2, missing_value = "", merged_value = "others")
+  new_variable_value <- merge_trivialLevels_in_categoricalVariable(variable_name, dt = data_dt, first_n = 2, extra_missing_value = "", merged_value = "others")
   data_dt[ , (variable_name) := new_variable_value]
 }
+
+#: ----example 2----
+#: for each variable, for n from 0 to floor of half of the n distinct values as argument `first_n` value.
+# if replace in place for dt inside loop, then use %do%
+# if return the lists combined, chunk (i.e., multipe-columns-at-a-time) replace out of loop, then use %dopar%
+# the speed trade off exisits in "send-receive-combine-data communication/operation cost" (for parellel) 
+#   vs. "single operation per loop index" (for serial)
+# the memory trade advantage is apprarently serial.
+temp <- foreach (variable_name = character_or_factor_varNames_selected, .verbose = TRUE) %:% 
+  foreach( n = 0:floor(n_distinct(joined_dt[[variable_name]])/2) ) %do% {
+
+
+    message(variable_name, n) # note, this n is `first_n` value, not resulting n_levels.
+
+    new_variable_value <- merge_trivialLevels_in_categoricalVariable(variable_name, dt = joined_dt, 
+                                                                     flag_use_minimal_sample_size_per_level = FALSE, 
+                                                                     first_n = n, extra_missing_value = "", 
+                                                                     merged_value = "others_merged",
+                                                                     merged_missing_value = "missing_value")
+
+    #: if return the `new_variable_value` and .combine to create list of list, here is the end of the chunk
+
+    #----#
+    #: else if replace in place within loop for each `new_variable_value`
+    joined_dt[ , (sprintf("%s_%d_mergedLevels", variable_name, new_variable_value %>% n_distinct)) :=  new_variable_value]
+
+    #: if replace in place, no need to return anything.
+    invisible(NULL)
+  }
+
+
+# #: if select %dopar% and return the vector, .combine to list of list, the memory-intensive way, the following code as of 
+# # replace-out-of-previous-loop will be needed (uncommented out).
+
+
+# names(temp) <- character_or_factor_varNames_selected
+# foreach (i = 1:length(temp)) %do% {
+
+#     varName <- temp[i] %>% names
+
+#     n_levels <- temp[[i]] %>% map_int(., ~n_distinct(levels(.))) # return a int vector
+
+#     joined_dt[ , (sprintf("%s_%d_mergedLevels", varName, n_levels)) :=  temp[[i]] %>% as.data.table]
+
+#     return(NULL)
+
+# }
+
 
 # check
 # temp %>% map(., ~table(.) %>% sort)
