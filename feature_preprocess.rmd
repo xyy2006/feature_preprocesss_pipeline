@@ -129,6 +129,18 @@ noReturn <- foreach( cn = char_colnames) %do% {
 	invisible(NULL)
 }
 
+# or another example use `set`
+character_colnames_chr <- joined_dt %>% map_lgl(., ~inherits(., "character")) %>% which %>% colnames(joined_dt)[.]
+#: confirm it is character, not able to be dbl.
+joined_dt[, character_colnames_chr, with = FALSE]
+for (vN in character_colnames_chr) {
+      set(joined_dt, i = NULL, j = vN, value = as.factor(joined_dt[[vN]]))
+}
+joined_dt %>% sapply(., class) %>% table
+
+
+
+
 #---now filter on var == 0 on all non-character columns----------
 non_character_index <- data_dt %>% sapply(., function(x) !is(x, "character")) %>% which
 message("Non character features have: ", non_character_index %>% length)
